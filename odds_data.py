@@ -1,12 +1,11 @@
 """
-Odds ingestion via The Odds API.
-Sign up at https://the-odds-api.com for a free key (500 credits/month).
+Odds ingestion via The Odds API — multi-sport version.
 """
 
 import os
 import requests
 from datetime import datetime, timezone
-from typing import List, Dict, Optional
+from typing import List, Dict
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,67 +13,57 @@ load_dotenv()
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 BASE_URL = "https://api.the-odds-api.com/v4"
 
+SPORTS = {
+    "MLB": "baseball_mlb",
+    "NBA": "basketball_nba",
+    "NFL": "americanfootball_nfl",
+    "NHL": "icehockey_nhl",
+    "WNBA": "basketball_wnba",
+}
 
-def get_mlb_odds(
-    markets: str = "h2h,spreads,totals",
-    regions: str = "us",
-    odds_format: str = "american"
-) -> List[Dict]:
-    """
-    Pull current MLB odds from multiple books.
-    Returns list of events with bookmaker odds.
-    """
+
+def get_odds_for_sport(sport_key: str, markets: str = "h2h", regions: str = "us") -> list:
+    """Pull odds for one sport key from The Odds API."""
     if not ODDS_API_KEY:
-        raise ValueError("ODDS_API_KEY not set. Add it to your .env file.")
+        raise ValueError("ODDS_API_KEY not set. Add it in Settings or Streamlit secrets.")
 
     params = {
         "apiKey": ODDS_API_KEY,
         "regions": regions,
         "markets": markets,
-        "oddsFormat": odds_format,
+        "oddsFormat": "american",
     }
 
-    resp = requests.get(f"{BASE_URL}/sports/baseball_mlb/odds", params=params, timeout=30)
+    resp = requests.get(
+        f"{BASE_URL}/sports/{sport_key}/odds",
+        params=params,
+        timeout=30
+    )
     resp.raise_for_status()
 
-    # Remaining credits are in headers
     remaining = resp.headers.get("x-requests-remaining")
     used = resp.headers.get("x-requests-used")
-    print(f"Odds API credits — used: {used}, remaining: {remaining}")
+    print(f"Odds API — used: {used}, remaining: {remaining}")
 
     return resp.json()
 
 
-def snapshot_odds_for_db(odds_data: List[Dict]) -> List[Dict]:
+def get_all_sports_odds() -> dict:
     """
-    Flatten odds into rows ready for OddsSnapshot table.
-    Each row = one bookmaker + market + outcome at this exact moment.
+    Pull odds for all five major sports.
+    Returns { "MLB": [...], "NBA": [...], ... }
     """
-    rows = []
-    now = datetime.now(timezone.utc)
+    results = {}
+    for name, key in SPORTS.items():
+        try:
+            events = get_odds_for_sport(key)
+            results[name] = events
+            print(f"{name}: {len(events)} events")
+        except Exception as e:
+            print(f"Failed to pull {name}: {e}")
+            results[name] = []
+    return results
 
-    for event in odds_data:
-        game_id = event.get("id")  # The Odds API event id (string)
-        home = event.get("home_team")
-        away = event.get("away_team")
-        commence = event.get("commence_time")
 
-        for book in event.get("bookmakers", []):
-            book_name = book.get("title") or book.get("key")
-            for market in book.get("markets", []):
-                market_key = market.get("key")  # h2h, spreads, totals
-                for outcome in market.get("outcomes", []):
-                    rows.append({
-                        "external_event_id": game_id,
-                        "home_team": home,
-                        "away_team": away,
-                        "commence_time": commence,
-                        "snapshot_time": now,
-                        "bookmaker": book_name,
-                        "market": market_key,
-                        "outcome": outcome.get("name"),
-                        "price": outcome.get("price"),
-                        "point": outcome.get("point"),
-                    })
-
-    return rows
+def get_mlb_odds(markets: str = "h2h,spreads,totals", regions: str = "us") -> list:
+    """Kept for backward compatibility with older MLB
