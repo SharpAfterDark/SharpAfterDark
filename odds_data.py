@@ -1,5 +1,5 @@
 """
-Odds ingestion via The Odds API — multi-sport version.
+Odds ingestion via The Odds API — multi-sport + player props
 """
 
 import os
@@ -21,10 +21,19 @@ SPORTS = {
     "WNBA": "basketball_wnba",
 }
 
+# Featured prop markets we care about (keeps API usage reasonable)
+PROP_MARKETS = {
+    "MLB": "pitcher_strikeouts,batter_hits,batter_total_bases,batter_home_runs,batter_rbis",
+    "NBA": "player_points,player_rebounds,player_assists,player_threes",
+    "NFL": "player_pass_yds,player_rush_yds,player_receptions,player_pass_tds",
+    "NHL": "player_points,player_shots_on_goal,player_goals,player_assists",
+    "WNBA": "player_points,player_rebounds,player_assists,player_threes",
+}
+
 
 def get_odds_for_sport(sport_key: str, markets: str = "h2h", regions: str = "us") -> list:
     if not ODDS_API_KEY:
-        raise ValueError("ODDS_API_KEY not set. Add it in Settings or Streamlit secrets.")
+        raise ValueError("ODDS_API_KEY not set")
 
     params = {
         "apiKey": ODDS_API_KEY,
@@ -32,18 +41,9 @@ def get_odds_for_sport(sport_key: str, markets: str = "h2h", regions: str = "us"
         "markets": markets,
         "oddsFormat": "american",
     }
-
-    resp = requests.get(
-        f"{BASE_URL}/sports/{sport_key}/odds",
-        params=params,
-        timeout=30
-    )
+    resp = requests.get(f"{BASE_URL}/sports/{sport_key}/odds", params=params, timeout=30)
     resp.raise_for_status()
-
-    remaining = resp.headers.get("x-requests-remaining")
-    used = resp.headers.get("x-requests-used")
-    print(f"Odds API — used: {used}, remaining: {remaining}")
-
+    print(f"Odds API remaining: {resp.headers.get('x-requests-remaining')}")
     return resp.json()
 
 
@@ -51,44 +51,81 @@ def get_all_sports_odds() -> dict:
     results = {}
     for name, key in SPORTS.items():
         try:
-            events = get_odds_for_sport(key)
+            events = get_odds_for_sport(key, markets="h2h")
             results[name] = events
-            print(f"{name}: {len(events)} events")
+            print(f"{name}: {len(events)} moneyline events")
         except Exception as e:
-            print(f"Failed to pull {name}: {e}")
+            print(f"Failed {name}: {e}")
             results[name] = []
     return results
 
 
-def get_mlb_odds(markets: str = "h2h,spreads,totals", regions: str = "us") -> list:
+def get_events_list(sport_key: str) -> list:
+    """Lightweight list of upcoming events (no odds)."""
+    if not ODDS_API_KEY:
+        raise ValueError("ODDS_API_KEY not set")
+    params = {"apiKey": ODDS_API_KEY}
+    resp = requests.get(f"{BASE_URL}/sports/{sport_key}/events", params=params, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_event_props(sport_key: str, event_id: str, markets: str) -> dict:
+    """
+    Player props require the event-odds endpoint (one game at a time).
+    """
+    if not ODDS_API_KEY:
+        raise ValueError("ODDS_API_KEY not set")
+
+    params = {
+        "apiKey": ODDS_API_KEY,
+        "regions": "us",
+        "markets": markets,
+        "oddsFormat": "american",
+    }
+    url = f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds"
+    resp = requests.get(url, params=params, timeout=25)
+    resp.raise_for_status()
+    print(f"Props remaining: {resp.headers.get('x-requests-remaining')}")
+    return resp.json()
+
+
+def get_props_for_sport(sport_name: str, max_events: int = 4) -> list:
+    """
+    Pull player props for the next few events in one sport.
+    max_events keeps free-tier usage under control.
+    """
+    sport_key = SPORTS.get(sport_name)
+    markets = PROP_MARKETS.get(sport_name)
+    if not sport_key or not markets:
+        return []
+
+    try:
+        events = get_events_list(sport_key)
+    except Exception as e:
+        print(f"Events list failed for {sport_name}: {e}")
+        return []
+
+    # Sort by commence time and take the next few
+    events = sorted(events, key=lambda x: x.get("commence_time", ""))[:max_events]
+    results = []
+
+    for ev in events:
+        event_id = ev.get("id")
+        home = ev.get("home_team", "")
+        away = ev.get("away_team", "")
+        event_name = f"{away} @ {home}"
+        try:
+            data = get_event_props(sport_key, event_id, markets)
+            data["_event_name"] = event_name
+            data["_sport"] = sport_name
+            results.append(data)
+        except Exception as e:
+            print(f"Props failed for {event_name}: {e}")
+            continue
+
+    return results
+
+
+def get_mlb_odds(markets: str = "h2h", regions: str = "us") -> list:
     return get_odds_for_sport("baseball_mlb", markets=markets, regions=regions)
-
-
-def snapshot_odds_for_db(odds_data: List[Dict]) -> List[Dict]:
-    rows = []
-    now = datetime.now(timezone.utc)
-
-    for event in odds_data:
-        game_id = event.get("id")
-        home = event.get("home_team")
-        away = event.get("away_team")
-        commence = event.get("commence_time")
-
-        for book in event.get("bookmakers", []):
-            book_name = book.get("title") or book.get("key")
-            for market in book.get("markets", []):
-                market_key = market.get("key")
-                for outcome in market.get("outcomes", []):
-                    rows.append({
-                        "external_event_id": game_id,
-                        "home_team": home,
-                        "away_team": away,
-                        "commence_time": commence,
-                        "snapshot_time": now,
-                        "bookmaker": book_name,
-                        "market": market_key,
-                        "outcome": outcome.get("name"),
-                        "price": outcome.get("price"),
-                        "point": outcome.get("point"),
-                    })
-    return rows
