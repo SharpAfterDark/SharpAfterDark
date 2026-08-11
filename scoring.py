@@ -1,13 +1,12 @@
 """
-SharpAfterDark v1 scoring — simple moneyline edge model.
+SharpAfterDark v1.1 scoring — multi-sport moneyline edge model
 """
 
 from datetime import datetime, timezone
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 
 def american_to_implied(odds: float) -> float:
-    """Convert American odds to implied probability (0-1)."""
     if odds is None:
         return None
     if odds > 0:
@@ -17,7 +16,6 @@ def american_to_implied(odds: float) -> float:
 
 
 def remove_vig(prob_a: float, prob_b: float) -> tuple:
-    """Simple two-way vig removal. Returns fair probs."""
     total = prob_a + prob_b
     if total == 0:
         return 0.5, 0.5
@@ -25,34 +23,25 @@ def remove_vig(prob_a: float, prob_b: float) -> tuple:
 
 
 def calculate_edge(model_prob: float, market_prob: float) -> float:
-    """Edge = model probability minus market implied probability."""
     if model_prob is None or market_prob is None:
         return None
     return model_prob - market_prob
 
 
 def sad_score(edge: float, model_prob: float) -> float:
-    """
-    Simple ranking score for v1.
-    Higher is better. Rewards bigger edges and higher confidence.
-    """
     if edge is None or model_prob is None:
         return 0.0
-    # Scale edge and weight by how decisive the model is
     return round(edge * 100 * (0.5 + abs(model_prob - 0.5)), 2)
 
 
-def score_moneyline_event(event: Dict) -> List[Dict]:
+def score_moneyline_event(event: Dict, sport: str) -> List[Dict]:
     """
-    Score one MLB event from The Odds API response.
-    Returns list of prediction dicts ready for the database.
+    Score one event. Returns list of positive-edge prediction dicts.
     """
     predictions = []
     home = event.get("home_team")
     away = event.get("away_team")
-    commence = event.get("commence_time")
 
-    # Collect best (highest) American odds for each side across books
     best_home_odds = None
     best_away_odds = None
     best_home_book = None
@@ -80,29 +69,23 @@ def score_moneyline_event(event: Dict) -> List[Dict]:
     if best_home_odds is None or best_away_odds is None:
         return []
 
-    # Market implied probs
     home_imp = american_to_implied(best_home_odds)
     away_imp = american_to_implied(best_away_odds)
-
-    # Fair probs (vig removed)
     home_fair, away_fair = remove_vig(home_imp, away_imp)
 
-    # v1 model: start from fair market + small home advantage (2%)
-    # This is a placeholder until we add real features
+    # v1 model: fair market + small home advantage
     HOME_ADVANTAGE = 0.02
     model_home = min(0.95, max(0.05, home_fair + HOME_ADVANTAGE))
     model_away = 1.0 - model_home
 
-    # Edges
     edge_home = calculate_edge(model_home, home_imp)
     edge_away = calculate_edge(model_away, away_imp)
 
     now = datetime.now(timezone.utc)
 
-    # Only keep sides with positive edge
-    if edge_home and edge_home > 0.01:  # > 1% edge
+    if edge_home and edge_home > 0.01:
         predictions.append({
-            "game_pk": None,  # will link later if possible
+            "sport": sport,
             "prediction_time": now,
             "market": "moneyline",
             "selection": home,
@@ -112,13 +95,13 @@ def score_moneyline_event(event: Dict) -> List[Dict]:
             "sad_score": sad_score(edge_home, model_home),
             "odds_at_prediction": best_home_odds,
             "bookmaker": best_home_book,
-            "model_version": "v1.0-home-adj",
+            "model_version": "v1.1-multi",
             "notes": f"vs {away}"
         })
 
     if edge_away and edge_away > 0.01:
         predictions.append({
-            "game_pk": None,
+            "sport": sport,
             "prediction_time": now,
             "market": "moneyline",
             "selection": away,
@@ -128,7 +111,7 @@ def score_moneyline_event(event: Dict) -> List[Dict]:
             "sad_score": sad_score(edge_away, model_away),
             "odds_at_prediction": best_away_odds,
             "bookmaker": best_away_book,
-            "model_version": "v1.0-home-adj",
+            "model_version": "v1.1-multi",
             "notes": f"vs {home}"
         })
 
