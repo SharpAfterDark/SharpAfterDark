@@ -152,4 +152,4 @@ def show_run_pipeline():
     st.caption("Moneyline (all sports) + optional player props for one sport")
 
     # Clear button
-    if st.button("🗑 Clear today's predictions", use_container
+    if st.button("🗑 Clear today's predictions", use_container)
