@@ -9,9 +9,9 @@ from datetime import date, datetime, timezone
 import os
 from pathlib import Path
 
-from utils.db import init_db, SessionLocal, Game, Prediction, OddsSnapshot
-from utils.mlb_data import get_todays_schedule
-from utils.odds_data import get_mlb_odds, snapshot_odds_for_db
+from db import init_db, SessionLocal, Game, Prediction, OddsSnapshot
+from mlb_data import get_todays_schedule
+from odds_data import get_mlb_odds, snapshot_odds_for_db
 
 # ──────────────────────────────────────────────
 # Page config
