@@ -1,7 +1,6 @@
 """
-SharpAfterDark Machine v1.1 — Multi-Sport
-MLB + NBA + NFL + NHL + WNBA
-Mobile-first for iPhone (Add to Home Screen)
+SharpAfterDark Machine v1.2
+Tight multi-sport moneyline + player props
 """
 
 import streamlit as st
@@ -10,43 +9,24 @@ from datetime import date, datetime, timezone
 import os
 from pathlib import Path
 
-# Flattened imports (no utils/ folder)
-from db import init_db, SessionLocal, Game, Prediction, OddsSnapshot
+from db import init_db, SessionLocal, Game, Prediction
 from mlb_data import get_todays_schedule
-from odds_data import get_mlb_odds, get_all_sports_odds
-from scoring import score_moneyline_event
+from odds_data import get_all_sports_odds, get_props_for_sport
+from scoring import score_moneyline_event, score_player_prop_market
 
-# ──────────────────────────────────────────────
-# Page config
-# ──────────────────────────────────────────────
 st.set_page_config(
     page_title="SharpAfterDark",
     page_icon="🌑",
     layout="centered",
     initial_sidebar_state="collapsed",
-    menu_items={
-        "Get Help": None,
-        "Report a bug": None,
-        "About": "SharpAfterDark Machine v1.1 — Multi-Sport"
-    }
 )
 
 init_db()
 
-# ──────────────────────────────────────────────
-# Dark mobile CSS
-# ──────────────────────────────────────────────
 st.markdown("""
 <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    .stApp {
-        background-color: #0a0a0a;
-        color: #e5e5e5;
-    }
-    
+    #MainMenu, footer, header {visibility: hidden;}
+    .stApp { background-color: #0a0a0a; color: #e5e5e5; }
     .block-container {
         padding-top: 0.8rem !important;
         padding-bottom: 5rem !important;
@@ -54,40 +34,14 @@ st.markdown("""
         padding-right: 1rem !important;
         max-width: 480px;
     }
-    
-    h1 { font-size: 1.45rem !important; font-weight: 700 !important; color: #f5f5f5 !important; }
-    h2, h3 { font-size: 1.15rem !important; color: #e5e5e5 !important; }
+    h1, h2, h3 { color: #f5f5f5 !important; }
     p, label, .stMarkdown { color: #d4d4d4 !important; }
-    
     .stButton > button {
-        width: 100%;
-        min-height: 48px;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 1rem;
-        border: none;
+        width: 100%; min-height: 48px; border-radius: 12px;
+        font-weight: 600; border: none;
     }
-    
     .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #7c3aed, #4f46e5);
-        color: white;
-    }
-    
-    .stAlert {
-        border-radius: 12px;
-        border: 1px solid #262626;
-    }
-    
-    div[role="radiogroup"] label {
-        background: #171717;
-        border-radius: 10px;
-        padding: 10px 14px !important;
-        margin-bottom: 6px;
-        border: 1px solid #262626;
-    }
-    
-    .bottom-nav-spacer {
-        height: 20px;
+        background: linear-gradient(135deg, #7c3aed, #4f46e5); color: white;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -95,7 +49,7 @@ st.markdown("""
 
 def main():
     st.markdown("### 🌑 SharpAfterDark")
-    st.caption("Multi-Sport Machine v1.1")
+    st.caption("v1.2 · Tight + Props")
 
     page = st.radio(
         "nav",
@@ -103,7 +57,6 @@ def main():
         horizontal=True,
         label_visibility="collapsed"
     )
-
     st.divider()
 
     if "Board" in page:
@@ -115,20 +68,24 @@ def main():
     else:
         show_settings()
 
-    st.markdown('<div class="bottom-nav-spacer"></div>', unsafe_allow_html=True)
-
 
 def show_dashboard():
     today = date.today().isoformat()
     st.markdown(f"**{today}**")
 
-    # Sport filter dropdown
-    sport_filter = st.selectbox(
-        "Sport",
-        ["All", "MLB", "NBA", "NFL", "NHL", "WNBA"],
-        index=0,
-        label_visibility="collapsed"
-    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        sport_filter = st.selectbox(
+            "Sport",
+            ["All", "MLB", "NBA", "NFL", "NHL", "WNBA"],
+            index=0
+        )
+    with col_b:
+        market_filter = st.selectbox(
+            "Market",
+            ["Moneyline", "Player Props"],
+            index=0
+        )
 
     db = SessionLocal()
     try:
@@ -145,32 +102,35 @@ def show_dashboard():
     finally:
         db.close()
 
-    # Filter by selected sport
+    # Apply filters
     if sport_filter != "All":
         preds = [p for p in preds if p.notes and p.notes.startswith(sport_filter)]
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    if market_filter == "Moneyline":
+        preds = [p for p in preds if p.market == "moneyline"]
+    else:
+        preds = [p for p in preds if p.market != "moneyline"]
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
         st.metric("Games", len(games) if sport_filter in ["All", "MLB"] else "—")
-    with col2:
+    with c2:
         st.metric("Picks", len(preds))
-    with col3:
+    with c3:
         edges = [p.edge for p in preds if p.edge is not None]
-        avg_edge = f"{sum(edges)/len(edges):.1%}" if edges else "—"
-        st.metric("Avg Edge", avg_edge)
+        avg = f"{sum(edges)/len(edges):.1%}" if edges else "—"
+        st.metric("Avg Edge", avg)
 
     st.markdown("#### Ranked Board")
 
     if not preds:
-        st.info(f"No predictions for **{sport_filter}** yet. Run the pipeline.")
+        st.info(f"No {market_filter.lower()} picks for **{sport_filter}**. Run the pipeline.")
     else:
-        for i, p in enumerate(preds[:25], 1):
+        for i, p in enumerate(preds[:30], 1):
             edge_str = f"{p.edge:+.1%}" if p.edge is not None else "—"
             sad = f"{p.sad_score:.2f}" if p.sad_score is not None else "—"
             odds = p.odds_at_prediction if p.odds_at_prediction else "—"
-            sport_tag = ""
-            if p.notes and "|" in p.notes:
-                sport_tag = p.notes.split("|")[0].strip()
+            sport_tag = p.notes.split("|")[0].strip() if p.notes and "|" in p.notes else ""
 
             st.markdown(
                 f"**{i}. {p.selection}**  \n"
@@ -178,37 +138,37 @@ def show_dashboard():
             )
             st.divider()
 
-    # Only show MLB games when relevant
-    if sport_filter in ["All", "MLB"] and games:
+    if sport_filter in ["All", "MLB"] and games and market_filter == "Moneyline":
         st.markdown("#### Today’s MLB Games")
         for g in games:
             pitchers = f"{g.probable_away_pitcher or 'TBD'} vs {g.probable_home_pitcher or 'TBD'}"
-            st.markdown(
-                f"**{g.away_team}** @ **{g.home_team}**  \n"
-                f"_{pitchers}_ · {g.status or 'Scheduled'}"
-            )
+            st.markdown(f"**{g.away_team}** @ **{g.home_team}**  \n_{pitchers}_")
             st.divider()
 
 
 def show_run_pipeline():
     st.markdown("#### Run Pipeline")
-    st.caption("Pull all 5 sports → snapshot odds → score → store with timestamp")
+    st.caption("Moneyline (all sports) + optional player props for one sport")
 
     target_date = st.date_input("Date", value=date.today(), label_visibility="collapsed")
 
+    prop_sport = st.selectbox(
+        "Also pull player props for:",
+        ["None", "MLB", "NBA", "NFL", "NHL", "WNBA"],
+        index=1
+    )
+
     if st.button("▶ Run Full Pipeline", type="primary", use_container_width=True):
 
-        # 1. MLB Schedule
-        with st.status("Pulling MLB schedule…", expanded=True) as status:
+        # 1. MLB schedule
+        with st.status("MLB schedule…", expanded=True) as status:
             try:
                 games = get_todays_schedule(target_date.isoformat())
-                st.write(f"Found **{len(games)}** MLB games")
-
+                st.write(f"**{len(games)}** MLB games")
                 db = SessionLocal()
                 saved = 0
                 for g in games:
-                    existing = db.query(Game).filter(Game.game_pk == g["game_pk"]).first()
-                    if not existing:
+                    if not db.query(Game).filter(Game.game_pk == g["game_pk"]).first():
                         db.add(Game(
                             game_pk=g["game_pk"],
                             game_date=g["game_date"],
@@ -223,32 +183,26 @@ def show_run_pipeline():
                         saved += 1
                 db.commit()
                 db.close()
-                st.write(f"Saved **{saved}** new MLB games")
                 status.update(label="MLB schedule done", state="complete")
             except Exception as e:
-                status.update(label="MLB schedule failed", state="error")
+                status.update(label="Schedule failed", state="error")
                 st.error(str(e))
 
-        # 2. All sports odds + scoring
-        with st.status("Pulling all sports + scoring…", expanded=True) as status:
+        # 2. Moneyline – all sports
+        with st.status("Moneyline – all sports…", expanded=True) as status:
             try:
                 if not os.getenv("ODDS_API_KEY"):
-                    st.warning("No ODDS_API_KEY set. Go to Settings.")
-                    status.update(label="Skipped – no key", state="error")
+                    st.warning("No ODDS_API_KEY")
+                    status.update(label="Skipped", state="error")
                 else:
                     all_odds = get_all_sports_odds()
-                    total_events = sum(len(v) for v in all_odds.values())
-                    st.write(f"**{total_events}** events across 5 sports")
-
                     all_preds = []
                     for sport, events in all_odds.items():
                         for event in events:
-                            preds = score_moneyline_event(event, sport)
-                            all_preds.extend(preds)
+                            all_preds.extend(score_moneyline_event(event, sport, min_edge=0.02))
                         st.write(f"{sport}: {len(events)} games")
 
                     db = SessionLocal()
-                    saved = 0
                     for p in all_preds:
                         db.add(Prediction(
                             prediction_time=p["prediction_time"],
@@ -261,33 +215,69 @@ def show_run_pipeline():
                             odds_at_prediction=p["odds_at_prediction"],
                             bookmaker=p["bookmaker"],
                             model_version=p["model_version"],
-                            notes=f"{p['sport']} | {p.get('notes', '')}",
+                            notes=p["notes"],
                         ))
-                        saved += 1
                     db.commit()
                     db.close()
-
-                    st.write(f"**{saved}** positive-edge picks saved")
-                    status.update(label="All sports scored", state="complete")
+                    st.write(f"**{len(all_preds)}** moneyline edges ≥ 2%")
+                    status.update(label="Moneyline done", state="complete")
             except Exception as e:
-                status.update(label="Odds/scoring failed", state="error")
+                status.update(label="Moneyline failed", state="error")
                 st.error(str(e))
 
-        st.success("Multi-sport pipeline finished.")
+        # 3. Player props (optional, limited events)
+        if prop_sport != "None":
+            with st.status(f"Player props – {prop_sport}…", expanded=True) as status:
+                try:
+                    prop_events = get_props_for_sport(prop_sport, max_events=4)
+                    st.write(f"Pulled props for **{len(prop_events)}** games")
+
+                    prop_preds = []
+                    for ev_data in prop_events:
+                        event_name = ev_data.get("_event_name", "")
+                        sport = ev_data.get("_sport", prop_sport)
+                        for book in ev_data.get("bookmakers", []):
+                            for market in book.get("markets", []):
+                                prop_preds.extend(
+                                    score_player_prop_market(market, sport, event_name, min_edge=0.025)
+                                )
+
+                    db = SessionLocal()
+                    for p in prop_preds:
+                        db.add(Prediction(
+                            prediction_time=p["prediction_time"],
+                            market=p["market"],
+                            selection=p["selection"],
+                            model_prob=p["model_prob"],
+                            market_implied_prob=p["market_implied_prob"],
+                            edge=p["edge"],
+                            sad_score=p["sad_score"],
+                            odds_at_prediction=p["odds_at_prediction"],
+                            bookmaker=p.get("bookmaker"),
+                            model_version=p["model_version"],
+                            notes=p["notes"],
+                        ))
+                    db.commit()
+                    db.close()
+                    st.write(f"**{len(prop_preds)}** prop edges ≥ 2.5%")
+                    status.update(label="Props done", state="complete")
+                except Exception as e:
+                    status.update(label="Props failed", state="error")
+                    st.error(str(e))
+
+        st.success("Pipeline finished.")
 
 
 def show_predictions_log():
     st.markdown("#### Predictions Log")
-    st.caption("Every pick stored with the exact odds at generation time.")
-
     db = SessionLocal()
     try:
-        preds = db.query(Prediction).order_by(Prediction.prediction_time.desc()).limit(50).all()
+        preds = db.query(Prediction).order_by(Prediction.prediction_time.desc()).limit(60).all()
     finally:
         db.close()
 
     if not preds:
-        st.info("No predictions logged yet.")
+        st.info("No predictions yet.")
         return
 
     for p in preds:
@@ -295,7 +285,7 @@ def show_predictions_log():
         edge = f"{p.edge:+.1%}" if p.edge is not None else "—"
         st.markdown(
             f"**{p.selection}**  \n"
-            f"{time_str} · `{p.market}` · Edge {edge} · Odds {p.odds_at_prediction or '—'} · {p.bookmaker or ''}"
+            f"{time_str} · `{p.market}` · Edge {edge} · Odds {p.odds_at_prediction or '—'}"
         )
         st.divider()
 
@@ -303,71 +293,38 @@ def show_predictions_log():
         "time": p.prediction_time,
         "market": p.market,
         "selection": p.selection,
-        "model_prob": p.model_prob,
         "edge": p.edge,
         "sad_score": p.sad_score,
         "odds": p.odds_at_prediction,
-        "book": p.bookmaker,
         "notes": p.notes,
     } for p in preds])
-
-    st.download_button(
-        "Download CSV",
-        df.to_csv(index=False),
-        file_name=f"sad_log_{date.today()}.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    st.download_button("Download CSV", df.to_csv(index=False),
+                       file_name=f"sad_log_{date.today()}.csv",
+                       mime="text/csv", use_container_width=True)
 
 
 def show_settings():
     st.markdown("#### Settings")
-
-    st.markdown("**The Odds API Key**")
     current = os.getenv("ODDS_API_KEY", "")
     if current:
-        st.success(f"Key loaded · ends with …{current[-4:]}")
+        st.success(f"Key loaded · …{current[-4:]}")
     else:
-        st.warning("No key set yet")
+        st.warning("No key set")
 
-    new_key = st.text_input(
-        "Paste key",
-        type="password",
-        placeholder="Get free key at the-odds-api.com",
-        label_visibility="collapsed",
-    )
-
+    new_key = st.text_input("Paste key", type="password", label_visibility="collapsed")
     if st.button("Save Key", use_container_width=True) and new_key.strip():
-        env_path = Path(".env")
-        content = f"ODDS_API_KEY={new_key.strip()}\n"
-        if env_path.exists():
-            lines = env_path.read_text().splitlines()
-            updated = False
-            for i, line in enumerate(lines):
-                if line.startswith("ODDS_API_KEY="):
-                    lines[i] = f"ODDS_API_KEY={new_key.strip()}"
-                    updated = True
-                    break
-            if not updated:
-                lines.append(f"ODDS_API_KEY={new_key.strip()}")
-            content = "\n".join(lines) + "\n"
-        env_path.write_text(content)
-        st.success("Saved. Restart / redeploy the app for it to take effect.")
+        Path(".env").write_text(f"ODDS_API_KEY={new_key.strip()}\n")
+        st.success("Saved. Redeploy for it to take effect.")
         st.rerun()
 
     st.divider()
-    st.markdown("#### How to put this on your iPhone")
-    st.markdown(
-        """
-1. Open this URL in **Safari**
-2. Tap the **Share** button
-3. Tap **Add to Home Screen**
-4. Name it **SharpAfterDark** → Add
-        """
-    )
-
-    st.divider()
-    st.caption("SharpAfterDark Machine v1.1 · Multi-Sport · Engine first")
+    st.markdown("""
+**iPhone home screen**
+1. Open in Safari  
+2. Share → Add to Home Screen  
+3. Name it SharpAfterDark
+    """)
+    st.caption("v1.2 · Engine first")
 
 
 if __name__ == "__main__":
