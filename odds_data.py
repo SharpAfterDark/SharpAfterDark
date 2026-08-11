@@ -23,7 +23,6 @@ SPORTS = {
 
 
 def get_odds_for_sport(sport_key: str, markets: str = "h2h", regions: str = "us") -> list:
-    """Pull odds for one sport key from The Odds API."""
     if not ODDS_API_KEY:
         raise ValueError("ODDS_API_KEY not set. Add it in Settings or Streamlit secrets.")
 
@@ -49,10 +48,6 @@ def get_odds_for_sport(sport_key: str, markets: str = "h2h", regions: str = "us"
 
 
 def get_all_sports_odds() -> dict:
-    """
-    Pull odds for all five major sports.
-    Returns { "MLB": [...], "NBA": [...], ... }
-    """
     results = {}
     for name, key in SPORTS.items():
         try:
@@ -66,4 +61,34 @@ def get_all_sports_odds() -> dict:
 
 
 def get_mlb_odds(markets: str = "h2h,spreads,totals", regions: str = "us") -> list:
-    """Kept for backward compatibility with older MLB
+    return get_odds_for_sport("baseball_mlb", markets=markets, regions=regions)
+
+
+def snapshot_odds_for_db(odds_data: List[Dict]) -> List[Dict]:
+    rows = []
+    now = datetime.now(timezone.utc)
+
+    for event in odds_data:
+        game_id = event.get("id")
+        home = event.get("home_team")
+        away = event.get("away_team")
+        commence = event.get("commence_time")
+
+        for book in event.get("bookmakers", []):
+            book_name = book.get("title") or book.get("key")
+            for market in book.get("markets", []):
+                market_key = market.get("key")
+                for outcome in market.get("outcomes", []):
+                    rows.append({
+                        "external_event_id": game_id,
+                        "home_team": home,
+                        "away_team": away,
+                        "commence_time": commence,
+                        "snapshot_time": now,
+                        "bookmaker": book_name,
+                        "market": market_key,
+                        "outcome": outcome.get("name"),
+                        "price": outcome.get("price"),
+                        "point": outcome.get("point"),
+                    })
+    return rows
