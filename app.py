@@ -1,6 +1,6 @@
 """
-SharpAfterDark Machine v1.2
-Tight multi-sport moneyline + player props
+SharpAfterDark Machine v1.3
+Single-sport Run → Moneyline + Player Props with SAD scores
 """
 
 import streamlit as st
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from db import init_db, SessionLocal, Game, Prediction
 from mlb_data import get_todays_schedule
-from odds_data import get_all_sports_odds, get_props_for_sport
+from odds_data import get_odds_for_sport, get_props_for_sport, SPORTS
 from scoring import score_moneyline_event, score_player_prop_market
 
 st.set_page_config(
@@ -49,7 +49,7 @@ st.markdown("""
 
 def main():
     st.markdown("### 🌑 SharpAfterDark")
-    st.caption("v1.2 · Tight + Props")
+    st.caption("v1.3 · Sport → Moneyline + Props")
 
     page = st.radio(
         "nav",
@@ -78,7 +78,7 @@ def show_dashboard():
         sport_filter = st.selectbox(
             "Sport",
             ["All", "MLB", "NBA", "NFL", "NHL", "WNBA"],
-            index=0
+            index=1
         )
     with col_b:
         market_filter = st.selectbox(
@@ -102,11 +102,9 @@ def show_dashboard():
     finally:
         db.close()
 
-    # Sport filter
     if sport_filter != "All":
         preds = [p for p in preds if p.notes and p.notes.startswith(sport_filter)]
 
-    # Market filter
     if market_filter == "Moneyline":
         preds = [p for p in preds if p.market == "moneyline"]
     else:
@@ -125,9 +123,9 @@ def show_dashboard():
     st.markdown("#### Ranked Board")
 
     if not preds:
-        st.info(f"No {market_filter.lower()} picks for **{sport_filter}**. Run the pipeline.")
+        st.info(f"No {market_filter.lower()} for **{sport_filter}**. Go to Run.")
     else:
-        for i, p in enumerate(preds[:30], 1):
+        for i, p in enumerate(preds[:40], 1):
             edge_str = f"{p.edge:+.1%}" if p.edge is not None else "—"
             sad = f"{p.sad_score:.2f}" if p.sad_score is not None else "—"
             odds = p.odds_at_prediction if p.odds_at_prediction else "—"
@@ -139,19 +137,12 @@ def show_dashboard():
             )
             st.divider()
 
-    if sport_filter in ["All", "MLB"] and games and market_filter == "Moneyline":
-        st.markdown("#### Today’s MLB Games")
-        for g in games:
-            pitchers = f"{g.probable_away_pitcher or 'TBD'} vs {g.probable_home_pitcher or 'TBD'}"
-            st.markdown(f"**{g.away_team}** @ **{g.home_team}**  \n_{pitchers}_")
-            st.divider()
-
 
 def show_run_pipeline():
     st.markdown("#### Run Pipeline")
-    st.caption("Moneyline (all sports) + optional player props for one sport")
+    st.caption("Pick a sport → pull today’s games → score moneylines + player props")
 
-    # Clear button
+    # Clear
     if st.button("🗑 Clear today's predictions", use_container_width=True):
         db = SessionLocal()
         today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
@@ -161,59 +152,70 @@ def show_run_pipeline():
         st.success(f"Cleared {deleted} predictions")
         st.rerun()
 
-    target_date = st.date_input("Date", value=date.today(), label_visibility="collapsed")
-
-    prop_sport = st.selectbox(
-        "Also pull player props for:",
-        ["None", "MLB", "NBA", "NFL", "NHL", "WNBA"],
-        index=1
+    sport = st.selectbox(
+        "Sport",
+        ["MLB", "NBA", "NFL", "NHL", "WNBA"],
+        index=0
     )
+    target_date = st.date_input("Date", value=date.today(), label_visibility="collapsed")
+    include_props = st.checkbox("Also pull player props", value=True)
 
-    if st.button("▶ Run Full Pipeline", type="primary", use_container_width=True):
+    if st.button("▶ Run for this sport", type="primary", use_container_width=True):
+        sport_key = SPORTS.get(sport)
+        if not sport_key:
+            st.error("Unknown sport")
+            return
 
-        # 1. MLB schedule
-        with st.status("MLB schedule…", expanded=True) as status:
-            try:
-                games = get_todays_schedule(target_date.isoformat())
-                st.write(f"**{len(games)}** MLB games")
-                db = SessionLocal()
-                saved = 0
-                for g in games:
-                    if not db.query(Game).filter(Game.game_pk == g["game_pk"]).first():
-                        db.add(Game(
-                            game_pk=g["game_pk"],
-                            game_date=g["game_date"],
-                            home_team=g["home_team"],
-                            away_team=g["away_team"],
-                            home_team_id=g["home_team_id"],
-                            away_team_id=g["away_team_id"],
-                            probable_home_pitcher=g.get("probable_home_pitcher"),
-                            probable_away_pitcher=g.get("probable_away_pitcher"),
-                            status=g.get("status"),
-                        ))
-                        saved += 1
-                db.commit()
-                db.close()
-                status.update(label="MLB schedule done", state="complete")
-            except Exception as e:
-                status.update(label="Schedule failed", state="error")
-                st.error(str(e))
+        # ──────────────────────────────────────
+        # 1. Schedule (MLB only has free detailed schedule)
+        # ──────────────────────────────────────
+        if sport == "MLB":
+            with st.status("Pulling MLB schedule…", expanded=True) as status:
+                try:
+                    games = get_todays_schedule(target_date.isoformat())
+                    st.write(f"**{len(games)}** games")
+                    db = SessionLocal()
+                    saved = 0
+                    for g in games:
+                        if not db.query(Game).filter(Game.game_pk == g["game_pk"]).first():
+                            db.add(Game(
+                                game_pk=g["game_pk"],
+                                game_date=g["game_date"],
+                                home_team=g["home_team"],
+                                away_team=g["away_team"],
+                                home_team_id=g["home_team_id"],
+                                away_team_id=g["away_team_id"],
+                                probable_home_pitcher=g.get("probable_home_pitcher"),
+                                probable_away_pitcher=g.get("probable_away_pitcher"),
+                                status=g.get("status"),
+                            ))
+                            saved += 1
+                    db.commit()
+                    db.close()
+                    status.update(label="Schedule done", state="complete")
+                except Exception as e:
+                    status.update(label="Schedule failed", state="error")
+                    st.error(str(e))
 
-        # 2. Moneyline – all sports
-        with st.status("Moneyline – all sports…", expanded=True) as status:
+        # ──────────────────────────────────────
+        # 2. Moneyline odds + score every game
+        # ──────────────────────────────────────
+        with st.status(f"Moneyline – {sport}…", expanded=True) as status:
             try:
                 if not os.getenv("ODDS_API_KEY"):
-                    st.warning("No ODDS_API_KEY")
+                    st.warning("No ODDS_API_KEY set")
                     status.update(label="Skipped", state="error")
                 else:
-                    all_odds = get_all_sports_odds()
-                    all_preds = []
-                    for sport, events in all_odds.items():
-                        for event in events:
-                            all_preds.extend(score_moneyline_event(event, sport, min_edge=0.008))
-                        st.write(f"{sport}: {len(events)} games")
+                    events = get_odds_for_sport(sport_key, markets="h2h")
+                    st.write(f"**{len(events)}** events with odds")
 
-                    # Dedupe
+                    all_preds = []
+                    for event in events:
+                        # Low floor so almost every game gets a scored side
+                        all_preds.extend(
+                            score_moneyline_event(event, sport, min_edge=0.005)
+                        )
+
                     seen = set()
                     db = SessionLocal()
                     saved = 0
@@ -238,32 +240,33 @@ def show_run_pipeline():
                         saved += 1
                     db.commit()
                     db.close()
-                    st.write(f"**{saved}** unique moneyline edges saved")
+
+                    st.write(f"**{saved}** moneyline picks scored")
                     status.update(label="Moneyline done", state="complete")
             except Exception as e:
                 status.update(label="Moneyline failed", state="error")
                 st.error(str(e))
 
-        # 3. Player props (optional)
-        if prop_sport != "None":
-            with st.status(f"Player props – {prop_sport}…", expanded=True) as status:
+        # ──────────────────────────────────────
+        # 3. Player props
+        # ──────────────────────────────────────
+        if include_props:
+            with st.status(f"Player props – {sport}…", expanded=True) as status:
                 try:
-                    prop_events = get_props_for_sport(prop_sport, max_events=5)
-                    st.write(f"Pulled props for **{len(prop_events)}** games")
+                    prop_events = get_props_for_sport(sport, max_events=6)
+                    st.write(f"Props pulled for **{len(prop_events)}** games")
 
                     prop_preds = []
                     for ev_data in prop_events:
                         event_name = ev_data.get("_event_name", "")
-                        sport = ev_data.get("_sport", prop_sport)
                         for book in ev_data.get("bookmakers", []):
                             for market in book.get("markets", []):
                                 prop_preds.extend(
                                     score_player_prop_market(
-                                        market, sport, event_name, min_edge=0.01
+                                        market, sport, event_name, min_edge=0.008
                                     )
                                 )
 
-                    # Dedupe props
                     seen = set()
                     db = SessionLocal()
                     saved = 0
@@ -288,20 +291,21 @@ def show_run_pipeline():
                         saved += 1
                     db.commit()
                     db.close()
-                    st.write(f"**{saved}** unique prop edges saved")
+
+                    st.write(f"**{saved}** player prop picks scored")
                     status.update(label="Props done", state="complete")
                 except Exception as e:
                     status.update(label="Props failed", state="error")
                     st.error(str(e))
 
-        st.success("Pipeline finished.")
+        st.success(f"{sport} pipeline finished. Check the Board.")
 
 
 def show_predictions_log():
     st.markdown("#### Predictions Log")
     db = SessionLocal()
     try:
-        preds = db.query(Prediction).order_by(Prediction.prediction_time.desc()).limit(80).all()
+        preds = db.query(Prediction).order_by(Prediction.prediction_time.desc()).limit(100).all()
     finally:
         db.close()
 
@@ -352,12 +356,12 @@ def show_settings():
 
     st.divider()
     st.markdown("""
-**iPhone home screen**
+**iPhone**
 1. Open in Safari  
 2. Share → Add to Home Screen  
 3. Name it SharpAfterDark
     """)
-    st.caption("v1.2 · Engine first")
+    st.caption("v1.3 · One sport at a time")
 
 
 if __name__ == "__main__":
