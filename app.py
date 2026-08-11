@@ -231,52 +231,51 @@ def show_run_pipeline():
                 st.error(str(e))
                 return
 
-        # 2. Odds
-        with st.status("Snapshotting odds…", expanded=True) as status:
+                # 2. Odds + scoring
+        with st.status("Snapshotting odds + scoring…", expanded=True) as status:
             try:
                 if not os.getenv("ODDS_API_KEY"):
                     st.warning("No ODDS_API_KEY set. Go to Settings and add your key.")
                     status.update(label="Odds skipped (no key)", state="error")
                 else:
-                    odds = get_mlb_odds()
-                    rows = snapshot_odds_for_db(odds)
-                    st.write(f"**{len(odds)}** events · **{len(rows)}** lines captured")
-                    status.update(label="Odds snapshot complete", state="complete")
+                    from scoring import score_moneyline_event
+                    from db import Prediction
+
+                    odds = get_mlb_odds(markets="h2h")
+                    st.write(f"**{len(odds)}** events pulled")
+
+                    all_preds = []
+                    for event in odds:
+                        preds = score_moneyline_event(event)
+                        all_preds.extend(preds)
+
+                    # Save predictions
+                    db = SessionLocal()
+                    saved = 0
+                    for p in all_preds:
+                        db.add(Prediction(
+                            game_pk=p.get("game_pk"),
+                            prediction_time=p["prediction_time"],
+                            market=p["market"],
+                            selection=p["selection"],
+                            model_prob=p["model_prob"],
+                            market_implied_prob=p["market_implied_prob"],
+                            edge=p["edge"],
+                            sad_score=p["sad_score"],
+                            odds_at_prediction=p["odds_at_prediction"],
+                            bookmaker=p["bookmaker"],
+                            model_version=p["model_version"],
+                            notes=p.get("notes"),
+                        ))
+                        saved += 1
+                    db.commit()
+                    db.close()
+
+                    st.write(f"**{saved}** positive-edge picks saved")
+                    status.update(label="Odds + scoring complete", state="complete")
             except Exception as e:
-                status.update(label="Odds failed", state="error")
+                status.update(label="Odds/scoring failed", state="error")
                 st.error(str(e))
-
-        st.success("Pipeline finished. Probability model layer comes next.")
-
-        # Quick preview
-        if "games" in locals() and games:
-            st.markdown("#### Games pulled")
-            for g in games[:8]:
-                st.markdown(f"• {g['away_team']} @ {g['home_team']}")
-
-
-def show_predictions_log():
-    st.markdown("#### Predictions Log")
-    st.caption("Every pick is stored with the exact odds at the moment it was generated.")
-
-    db = SessionLocal()
-    try:
-        preds = db.query(Prediction).order_by(Prediction.prediction_time.desc()).limit(50).all()
-    finally:
-        db.close()
-
-    if not preds:
-        st.info("No predictions logged yet.")
-        return
-
-    for p in preds:
-        time_str = p.prediction_time.strftime("%m/%d %H:%M") if p.prediction_time else "—"
-        edge = f"{p.edge:+.1%}" if p.edge is not None else "—"
-        st.markdown(
-            f"**{p.selection}**  \n"
-            f"{time_str} · `{p.market}` · Edge {edge} · Odds {p.odds_at_prediction or '—'} · {p.bookmaker or ''}"
-        )
-        st.divider()
 
     # Download
     df = pd.DataFrame(
