@@ -74,4 +74,4 @@ st.markdown("""
     }
     
     .stAlert {
-        border-radius: 12px
+        border-radius:  }
