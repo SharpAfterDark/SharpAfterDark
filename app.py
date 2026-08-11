@@ -142,7 +142,6 @@ def show_run_pipeline():
     st.markdown("#### Run Pipeline")
     st.caption("Pick a sport → pull today’s games → score moneylines + player props")
 
-    # Clear
     if st.button("🗑 Clear today's predictions", use_container_width=True):
         db = SessionLocal()
         today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
@@ -166,9 +165,7 @@ def show_run_pipeline():
             st.error("Unknown sport")
             return
 
-        # ──────────────────────────────────────
-        # 1. Schedule (MLB only has free detailed schedule)
-        # ──────────────────────────────────────
+        # 1. MLB schedule
         if sport == "MLB":
             with st.status("Pulling MLB schedule…", expanded=True) as status:
                 try:
@@ -197,9 +194,7 @@ def show_run_pipeline():
                     status.update(label="Schedule failed", state="error")
                     st.error(str(e))
 
-        # ──────────────────────────────────────
-        # 2. Moneyline odds + score every game
-        # ──────────────────────────────────────
+        # 2. Moneyline
         with st.status(f"Moneyline – {sport}…", expanded=True) as status:
             try:
                 if not os.getenv("ODDS_API_KEY"):
@@ -211,7 +206,6 @@ def show_run_pipeline():
 
                     all_preds = []
                     for event in events:
-                        # Low floor so almost every game gets a scored side
                         all_preds.extend(
                             score_moneyline_event(event, sport, min_edge=0.005)
                         )
@@ -247,53 +241,70 @@ def show_run_pipeline():
                 status.update(label="Moneyline failed", state="error")
                 st.error(str(e))
 
-        # ──────────────────────────────────────
-        # 3. Player props
-        # ──────────────────────────────────────
+        # 3. Player props (with diagnostic)
         if include_props:
             with st.status(f"Player props – {sport}…", expanded=True) as status:
                 try:
                     prop_events = get_props_for_sport(sport, max_events=6)
-                    st.write(f"Props pulled for **{len(prop_events)}** games")
+                    st.write(f"Props API returned **{len(prop_events)}** games")
 
-                    prop_preds = []
-                    for ev_data in prop_events:
-                        event_name = ev_data.get("_event_name", "")
-                        for book in ev_data.get("bookmakers", []):
-                            for market in book.get("markets", []):
-                                prop_preds.extend(
-                                    score_player_prop_market(
-                                        market, sport, event_name, min_edge=0.008
+                    if not prop_events:
+                        st.warning("No events returned from props endpoint.")
+                        status.update(label="No events", state="error")
+                    else:
+                        total_markets = 0
+                        total_outcomes = 0
+                        sample_keys = set()
+
+                        for ev_data in prop_events:
+                            for book in ev_data.get("bookmakers", []):
+                                for market in book.get("markets", []):
+                                    total_markets += 1
+                                    sample_keys.add(market.get("key") or "unknown")
+                                    total_outcomes += len(market.get("outcomes", []))
+
+                        st.write(f"Markets found: **{total_markets}**")
+                        st.write(f"Outcomes found: **{total_outcomes}**")
+                        st.write(f"Market keys: {', '.join(sorted(sample_keys)) or 'none'}")
+
+                        prop_preds = []
+                        for ev_data in prop_events:
+                            event_name = ev_data.get("_event_name", "")
+                            for book in ev_data.get("bookmakers", []):
+                                for market in book.get("markets", []):
+                                    prop_preds.extend(
+                                        score_player_prop_market(
+                                            market, sport, event_name, min_edge=0.005
+                                        )
                                     )
-                                )
 
-                    seen = set()
-                    db = SessionLocal()
-                    saved = 0
-                    for p in prop_preds:
-                        key = (p["selection"], p["market"], p.get("odds_at_prediction"))
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        db.add(Prediction(
-                            prediction_time=p["prediction_time"],
-                            market=p["market"],
-                            selection=p["selection"],
-                            model_prob=p["model_prob"],
-                            market_implied_prob=p["market_implied_prob"],
-                            edge=p["edge"],
-                            sad_score=p["sad_score"],
-                            odds_at_prediction=p["odds_at_prediction"],
-                            bookmaker=p.get("bookmaker"),
-                            model_version=p["model_version"],
-                            notes=p["notes"],
-                        ))
-                        saved += 1
-                    db.commit()
-                    db.close()
+                        seen = set()
+                        db = SessionLocal()
+                        saved = 0
+                        for p in prop_preds:
+                            key = (p["selection"], p["market"], p.get("odds_at_prediction"))
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            db.add(Prediction(
+                                prediction_time=p["prediction_time"],
+                                market=p["market"],
+                                selection=p["selection"],
+                                model_prob=p["model_prob"],
+                                market_implied_prob=p["market_implied_prob"],
+                                edge=p["edge"],
+                                sad_score=p["sad_score"],
+                                odds_at_prediction=p["odds_at_prediction"],
+                                bookmaker=p.get("bookmaker"),
+                                model_version=p["model_version"],
+                                notes=p["notes"],
+                            ))
+                            saved += 1
+                        db.commit()
+                        db.close()
 
-                    st.write(f"**{saved}** player prop picks scored")
-                    status.update(label="Props done", state="complete")
+                        st.write(f"**{saved}** prop picks scored")
+                        status.update(label="Props done", state="complete")
                 except Exception as e:
                     status.update(label="Props failed", state="error")
                     st.error(str(e))
